@@ -1,0 +1,329 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Jump & Dodge</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#0b1020; color:#fff; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #wrap { height:100%; display:flex; align-items:center; justify-content:center; }
+    canvas { width:min(100vw, 520px); height:calc(width * 1.6); max-height:92vh; border-radius:18px; background:linear-gradient(#0b1020,#101a33); box-shadow: 0 12px 40px rgba(0,0,0,.45); touch-action: none; }
+    .hud {
+      position: fixed; inset: 0;
+      pointer-events:none;
+      display:flex; align-items:flex-start; justify-content:center;
+      padding: env(safe-area-inset-top) 14px 0 14px;
+    }
+    .pill {
+      margin-top: 10px;
+      pointer-events:none;
+      display:flex; gap:10px; align-items:center;
+      padding:10px 14px; border-radius:999px;
+      background: rgba(255,255,255,.08);
+      backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,.12);
+      font-weight:600;
+    }
+    .btnRow {
+      position: fixed; bottom: 18px; left: 0; right: 0;
+      display:flex; justify-content:center; gap:10px;
+      padding: 0 14px calc(env(safe-area-inset-bottom) + 0px) 14px;
+      pointer-events:auto;
+    }
+    button {
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(255,255,255,.08);
+      color:#fff; font-weight:700;
+      padding: 12px 16px; border-radius: 14px;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 8px 20px rgba(0,0,0,.25);
+    }
+    button:active { transform: translateY(1px); }
+    .hint {
+      position: fixed; top: 64px; left: 0; right: 0;
+      display:flex; justify-content:center;
+      pointer-events:none;
+      opacity:.9;
+      text-align:center;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="c" width="360" height="576"></canvas>
+  </div>
+
+  <div class="hud">
+    <div class="pill">
+      <span>Ұпай: <span id="score">0</span></span>
+      <span>Рекорд: <span id="best">0</span></span>
+      <span id="state">PLAY</span>
+    </div>
+  </div>
+
+  <div class="hint" id="hint">Секіру үшін экранды түрт 👆</div>
+
+  <div class="btnRow">
+    <button id="restart">Restart</button>
+    <button id="mute">Sound: ON</button>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best');
+  const stateEl = document.getElementById('state');
+  const hintEl  = document.getElementById('hint');
+
+  const restartBtn = document.getElementById('restart');
+  const muteBtn    = document.getElementById('mute');
+
+  // --- Audio (tiny beeps) ---
+  let soundOn = true;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let actx = null;
+  function beep(freq=440, dur=0.06, type='sine', vol=0.04) {
+    if (!soundOn) return;
+    if (!actx) actx = new AudioCtx();
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type;
+    o.frequency.value = freq;
+    g.gain.value = vol;
+    o.connect(g); g.connect(actx.destination);
+    o.start();
+    o.stop(actx.currentTime + dur);
+  }
+
+  // --- Game constants ---
+  const W = canvas.width, H = canvas.height;
+  const groundY = H - 70;
+
+  const player = {
+    x: 90,
+    y: groundY - 34,
+    r: 18,
+    vy: 0,
+    onGround: true,
+  };
+
+  const gravity = 0.9;
+  const jumpV   = -14.5;
+
+  let obstacles = [];
+  let t = 0;
+  let speed = 4.3;
+  let score = 0;
+  let best = Number(localStorage.getItem('best_jump_dodge') || 0);
+  bestEl.textContent = best;
+
+  let gameOver = false;
+
+  function reset() {
+    obstacles = [];
+    t = 0;
+    speed = 4.3;
+    score = 0;
+    gameOver = false;
+    player.y = groundY - 34;
+    player.vy = 0;
+    player.onGround = true;
+    stateEl.textContent = "PLAY";
+    hintEl.style.display = "flex";
+  }
+
+  function spawnObstacle() {
+    const w = 18 + Math.random() * 22;
+    const h = 26 + Math.random() * 56;
+    obstacles.push({
+      x: W + 20,
+      y: groundY - h,
+      w, h,
+    });
+  }
+
+  function jump() {
+    if (gameOver) return;
+    if (player.onGround) {
+      player.vy = jumpV;
+      player.onGround = false;
+      hintEl.style.display = "none";
+      beep(620, 0.05, 'square', 0.03);
+    }
+  }
+
+  function endGame() {
+    gameOver = true;
+    stateEl.textContent = "GAME OVER";
+    beep(180, 0.08, 'sawtooth', 0.05);
+    beep(120, 0.12, 'sawtooth', 0.05);
+    if (score > best) {
+      best = score;
+      localStorage.setItem('best_jump_dodge', String(best));
+      bestEl.textContent = best;
+    }
+  }
+
+  // Controls: tap / click / space
+  canvas.addEventListener('pointerdown', (e) => { e.preventDefault(); jump(); }, {passive:false});
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space' || e.code === 'ArrowUp') { e.preventDefault(); jump(); }
+  });
+
+  restartBtn.addEventListener('click', () => { reset(); beep(520,0.05,'triangle',0.03); });
+  muteBtn.addEventListener('click', () => {
+    soundOn = !soundOn;
+    muteBtn.textContent = "Sound: " + (soundOn ? "ON" : "OFF");
+    if (soundOn) beep(520,0.05,'triangle',0.03);
+  });
+
+  function circleRectCollide(cx, cy, cr, rx, ry, rw, rh) {
+    // clamp circle center to rect
+    const x = Math.max(rx, Math.min(cx, rx + rw));
+    const y = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - x, dy = cy - y;
+    return dx*dx + dy*dy <= cr*cr;
+  }
+
+  function draw() {
+    // background stars
+    ctx.clearRect(0,0,W,H);
+    const grad = ctx.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0, "#0b1020");
+    grad.addColorStop(1, "#101a33");
+    ctx.fillStyle = grad;
+    ctx.fillRect(0,0,W,H);
+
+    // subtle stars
+    ctx.globalAlpha = 0.35;
+    for (let i=0; i<30; i++){
+      const sx = (i*97 + (t*0.7)) % W;
+      const sy = (i*53 + 40) % (groundY-60);
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(sx, sy, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // ground
+    ctx.fillStyle = "rgba(255,255,255,0.10)";
+    ctx.fillRect(0, groundY, W, H-groundY);
+    ctx.fillStyle = "rgba(255,255,255,0.12)";
+    ctx.fillRect(0, groundY-6, W, 6);
+
+    // obstacles
+    for (const o of obstacles) {
+      const g2 = ctx.createLinearGradient(o.x, o.y, o.x, o.y + o.h);
+      g2.addColorStop(0, "rgba(255,120,120,0.9)");
+      g2.addColorStop(1, "rgba(255,120,200,0.65)");
+      ctx.fillStyle = g2;
+      roundRect(ctx, o.x, o.y, o.w, o.h, 10);
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 2;
+      roundRect(ctx, o.x+1, o.y+1, o.w-2, o.h-2, 9);
+      ctx.stroke();
+    }
+
+    // player
+    const pg = ctx.createRadialGradient(player.x-6, player.y-10, 6, player.x, player.y, 28);
+    pg.addColorStop(0, "rgba(120,240,255,0.95)");
+    pg.addColorStop(1, "rgba(120,140,255,0.55)");
+    ctx.fillStyle = pg;
+    ctx.beginPath();
+    ctx.arc(player.x, player.y, player.r, 0, Math.PI*2);
+    ctx.fill();
+
+    // eye
+    ctx.fillStyle = "rgba(0,0,0,0.35)";
+    ctx.beginPath();
+    ctx.arc(player.x+6, player.y-4, 3.5, 0, Math.PI*2);
+    ctx.fill();
+
+    // score overlay in canvas (backup)
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.font = "700 18px system-ui";
+    ctx.fillText("Ұпай: " + score, 16, 28);
+
+    if (gameOver) {
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(0,0,W,H);
+
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.font = "800 34px system-ui";
+      ctx.fillText("GAME OVER", W/2, H/2 - 30);
+      ctx.font = "600 18px system-ui";
+      ctx.fillText("Restart бас немесе экранды түрт", W/2, H/2 + 10);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    const rr = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+rr, y);
+    ctx.arcTo(x+w, y, x+w, y+h, rr);
+    ctx.arcTo(x+w, y+h, x, y+h, rr);
+    ctx.arcTo(x, y+h, x, y, rr);
+    ctx.arcTo(x, y, x+w, y, rr);
+    ctx.closePath();
+  }
+
+  function update() {
+    t++;
+
+    if (!gameOver) {
+      // difficulty ramp
+      speed = Math.min(9.2, speed + 0.0009);
+
+      // spawn obstacles
+      if (t % Math.floor(55 - Math.min(25, score/60)) === 0) spawnObstacle();
+
+      // physics
+      player.vy += gravity;
+      player.y += player.vy;
+
+      if (player.y >= groundY - 34) {
+        player.y = groundY - 34;
+        player.vy = 0;
+        player.onGround = true;
+      }
+
+      // move obstacles
+      for (const o of obstacles) o.x -= speed;
+      // remove offscreen
+      obstacles = obstacles.filter(o => o.x + o.w > -20);
+
+      // collisions
+      for (const o of obstacles) {
+        if (circleRectCollide(player.x, player.y, player.r, o.x, o.y, o.w, o.h)) {
+          endGame();
+          break;
+        }
+      }
+
+      // score
+      score = Math.floor(t / 6);
+      scoreEl.textContent = score;
+    }
+
+    draw();
+    requestAnimationFrame(update);
+  }
+
+  // Tap to restart when game over
+  canvas.addEventListener('pointerdown', () => {
+    if (gameOver) { reset(); beep(520,0.05,'triangle',0.03); }
+  });
+
+  reset();
+  update();
+})();
+</script>
+</body>
+</html>
