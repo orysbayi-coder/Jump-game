@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Flappy Levels</title>
+  <style>
+    html,body{height:100%;margin:0;background:#0b1220;color:#e7ecff;font-family:system-ui,Segoe UI,Arial}
+    .wrap{display:grid;place-items:center;height:100%}
+    canvas{background:linear-gradient(#0f234a,#08111f);border:1px solid rgba(255,255,255,.15);border-radius:14px;box-shadow:0 20px 80px rgba(0,0,0,.45)}
+    .hint{max-width:720px;text-align:center;margin-top:12px;color:#aab6e6;font-size:14px;line-height:1.35}
+    .kbd{display:inline-block;padding:2px 8px;border:1px solid rgba(255,255,255,.2);border-radius:8px;background:rgba(255,255,255,.06)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <canvas id="c" width="420" height="720"></canvas>
+      <div class="hint">
+        Басқару: <span class="kbd">Space</span> немесе <span class="kbd">Click/Tap</span> — секіру.
+        <span class="kbd">R</span> — қайта бастау. Деңгейді өту үшін: <b>10 ұпай</b>.
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const W = canvas.width, H = canvas.height;
+
+  // ====== Level config ======
+  // Each level: pipeSpeed, gap, gravity, spawnInterval
+  const levels = [
+    { name:"1", pipeSpeed: 2.4, gap: 170, gravity: 0.42, spawn: 1400 },
+    { name:"2", pipeSpeed: 2.9, gap: 160, gravity: 0.45, spawn: 1350 },
+    { name:"3", pipeSpeed: 3.4, gap: 150, gravity: 0.48, spawn: 1300 },
+    { name:"4", pipeSpeed: 3.9, gap: 140, gravity: 0.50, spawn: 1250 },
+    { name:"5", pipeSpeed: 4.4, gap: 130, gravity: 0.52, spawn: 1200 },
+  ];
+  const POINTS_TO_CLEAR = 10;
+
+  // ====== Game state ======
+  let levelIndex = 0;
+  let score = 0;
+  let best = 0;
+  let clearedThisLevel = 0;
+  let running = false;
+  let gameOver = false;
+  let winAll = false;
+
+  // Bird
+  const bird = {
+    x: 110,
+    y: H * 0.45,
+    r: 14,
+    vy: 0,
+    flap: -8.2
+  };
+
+  // Pipes
+  let pipes = [];
+  let lastSpawn = 0;
+
+  // Parallax
+  let t = 0;
+
+  function currentLevel() { return levels[levelIndex]; }
+
+  function reset(forNextLevel=false) {
+    pipes = [];
+    bird.y = H * 0.45;
+    bird.vy = 0;
+    score = 0;
+    clearedThisLevel = 0;
+    lastSpawn = performance.now();
+    gameOver = false;
+    winAll = false;
+    running = true;
+
+    if (!forNextLevel) levelIndex = 0;
+  }
+
+  function nextLevel() {
+    levelIndex++;
+    if (levelIndex >= levels.length) {
+      winAll = true;
+      running = false;
+      return;
+    }
+    // keep best, move on
+    reset(true);
+  }
+
+  function spawnPipe() {
+    const lvl = currentLevel();
+    const gap = lvl.gap;
+
+    // Choose opening center
+    const margin = 90;
+    const center = rand(margin + gap/2, H - margin - gap/2);
+    const topH = center - gap/2;
+    const botY = center + gap/2;
+
+    pipes.push({
+      x: W + 40,
+      w: 70,
+      topH,
+      botY,
+      passed: false
+    });
+  }
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function flap() {
+    if (winAll) return;
+    if (!running) {
+      // start or restart from game over screen without resetting level by default
+      if (gameOver) reset(true);
+      else running = true;
+    }
+    if (!gameOver) bird.vy = bird.flap;
+  }
+
+  // Input
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); flap(); }
+    if (e.key.toLowerCase() === 'r') { reset(false); }
+  });
+  canvas.addEventListener('pointerdown', flap);
+
+  // Collision helpers
+  function circleRectCollide(cx, cy, cr, rx, ry, rw, rh) {
+    const nx = Math.max(rx, Math.min(cx, rx + rw));
+    const ny = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - nx, dy = cy - ny;
+    return (dx*dx + dy*dy) <= cr*cr;
+  }
+
+  function update(dt) {
+    const lvl = currentLevel();
+
+    // physics
+    bird.vy += lvl.gravity;
+    bird.y += bird.vy;
+
+    // bounds
+    if (bird.y - bird.r < 0) { bird.y = bird.r; bird.vy = 0; }
+    if (bird.y + bird.r > H) {
+      bird.y = H - bird.r;
+      gameOver = true;
+      running = false;
+    }
+
+    // spawn
+    const now = performance.now();
+    if (now - lastSpawn > lvl.spawn) {
+      spawnPipe();
+      lastSpawn = now;
+    }
+
+    // move pipes
+    for (const p of pipes) p.x -= lvl.pipeSpeed;
+
+    // remove off-screen
+    pipes = pipes.filter(p => p.x + p.w > -50);
+
+    // scoring + collision
+    for (const p of pipes) {
+      const topRect = { x:p.x, y:0, w:p.w, h:p.topH };
+      const botRect = { x:p.x, y:p.botY, w:p.w, h:H - p.botY };
+
+      if (circleRectCollide(bird.x, bird.y, bird.r, topRect.x, topRect.y, topRect.w, topRect.h) ||
+          circleRectCollide(bird.x, bird.y, bird.r, botRect.x, botRect.y, botRect.w, botRect.h)) {
+        gameOver = true;
+        running = false;
+      }
+
+      if (!p.passed && p.x + p.w < bird.x) {
+        p.passed = true;
+        score++;
+        clearedThisLevel++;
+        best = Math.max(best, score);
+
+        // level clear
+        if (clearedThisLevel >= POINTS_TO_CLEAR) {
+          running = false;
+          // small pause then go next
+          setTimeout(nextLevel, 650);
+        }
+      }
+    }
+
+    t += dt;
+  }
+
+  function draw() {
+    ctx.clearRect(0,0,W,H);
+
+    // Background stars / dots
+    ctx.globalAlpha = 0.25;
+    for (let i=0;i<40;i++){
+      const x = (i*97 + (t*40)) % W;
+      const y = (i*173) % H;
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(W - x, y, 2, 2);
+    }
+    ctx.globalAlpha = 1;
+
+    // Ground
+    const groundH = 70;
+    ctx.fillStyle = "rgba(0,0,0,.25)";
+    ctx.fillRect(0, H-groundH, W, groundH);
+
+    // Pipes
+    for (const p of pipes) {
+      // top
+      pipeRect(p.x, 0, p.w, p.topH);
+      // bottom
+      pipeRect(p.x, p.botY, p.w, H - p.botY);
+    }
+
+    // Bird
+    drawBird(bird.x, bird.y, bird.r);
+
+    // HUD
+    hud();
+
+    // Overlays
+    if (winAll) overlay("Жеңіс! 🎉", "Барлық деңгейді өттің. R — қайта бастау");
+    else if (!running && !gameOver && clearedThisLevel === 0 && score === 0 && levelIndex === 0) {
+      overlay("Flappy Levels", "Space / Click — бастау");
+    } else if (gameOver) {
+      overlay("Ойын бітті 💥", "Space — қайта ойнау (осы деңгей), R — 1-деңгейден");
+    } else if (!running && clearedThisLevel >= POINTS_TO_CLEAR) {
+      overlay("Деңгей өтті ✅", "Келесі деңгей...");
+    }
+  }
+
+  function pipeRect(x,y,w,h){
+    // body
+    ctx.fillStyle = "rgba(106,167,255,.22)";
+    ctx.fillRect(x,y,w,h);
+    // edge
+    ctx.strokeStyle = "rgba(255,255,255,.18)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x+1,y+1,w-2,h-2);
+
+    // lip
+    const lipH = 14;
+    if (y === 0) {
+      // top pipe lip at bottom
+      ctx.fillStyle = "rgba(139,91,255,.28)";
+      ctx.fillRect(x-6, h-lipH, w+12, lipH);
+    } else {
+      // bottom pipe lip at top
+      ctx.fillStyle = "rgba(139,91,255,.28)";
+      ctx.fillRect(x-6, y, w+12, lipH);
+    }
+  }
+
+  function drawBird(x,y,r){
+    // body
+    ctx.beginPath();
+    ctx.arc(x,y,r,0,Math.PI*2);
+    ctx.fillStyle = "rgba(231,236,255,.92)";
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.25)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // eye
+    ctx.beginPath();
+    ctx.arc(x+5,y-4,3.2,0,Math.PI*2);
+    ctx.fillStyle = "rgba(0,0,0,.6)";
+    ctx.fill();
+
+    // beak
+    ctx.beginPath();
+    ctx.moveTo(x+r-2,y);
+    ctx.lineTo(x+r+10,y-4);
+    ctx.lineTo(x+r+10,y+4);
+    ctx.closePath();
+    ctx.fillStyle = "rgba(106,167,255,.85)";
+    ctx.fill();
+  }
+
+  function hud(){
+    const lvl = currentLevel();
+    ctx.fillStyle = "rgba(255,255,255,.9)";
+    ctx.font = "700 18px system-ui, Segoe UI, Arial";
+    ctx.fillText(`Деңгей: ${lvl.name}/${levels.length}`, 14, 28);
+    ctx.fillText(`Ұпай: ${score}  (мақсат: ${POINTS_TO_CLEAR})`, 14, 52);
+    ctx.fillStyle = "rgba(170,182,230,.9)";
+    ctx.font = "14px system-ui, Segoe UI, Arial";
+    ctx.fillText(`Best: ${best}`, W-86, 28);
+  }
+
+  function overlay(title, subtitle){
+    ctx.fillStyle = "rgba(0,0,0,.45)";
+    ctx.fillRect(0,0,W,H);
+    ctx.fillStyle = "rgba(231,236,255,.95)";
+    ctx.font = "800 34px system-ui, Segoe UI, Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(title, W/2, H/2 - 20);
+    ctx.fillStyle = "rgba(170,182,230,.95)";
+    ctx.font = "16px system-ui, Segoe UI, Arial";
+    ctx.fillText(subtitle, W/2, H/2 + 18);
+    ctx.textAlign = "left";
+  }
+
+  // Main loop
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.03, (now-last)/1000);
+    last = now;
+
+    if (running) update(dt);
+    if (!winAll && levelIndex >= levels.length) winAll = true;
+
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // start screen state
+  running = false;
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
