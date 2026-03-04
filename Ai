@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>AI Сайт</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Arial;margin:0;background:#0b1220;color:#e7ecff}
+    header{padding:28px 18px;max-width:980px;margin:0 auto}
+    .card{max-width:980px;margin:0 auto;padding:18px}
+    .box{background:#101a33;border:1px solid rgba(255,255,255,.12);border-radius:16px;padding:16px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .grow{flex:1}
+    input,button,textarea{
+      border-radius:12px;border:1px solid rgba(255,255,255,.15);
+      background:#0b1220;color:#e7ecff;padding:12px;font-size:14px
+    }
+    button{cursor:pointer;background:linear-gradient(90deg,#6aa7ff,#8b5bff);border:none;font-weight:700}
+    button:disabled{opacity:.6;cursor:not-allowed}
+    .msgs{height:380px;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:10px}
+    .msg{max-width:80%;padding:10px 12px;border-radius:14px;border:1px solid rgba(255,255,255,.12)}
+    .me{align-self:flex-end;background:#13204a}
+    .ai{align-self:flex-start;background:#0f1833}
+    .muted{color:#aab6e6;font-size:13px}
+    .pill{display:inline-block;padding:6px 10px;border-radius:999px;border:1px solid rgba(255,255,255,.15)}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>AI бар сайт</h1>
+    <p class="muted">Бұл сайтта ішкі чат-бот бар: сұрақ қой — жауап береді.</p>
+    <span class="pill">/api/chat арқылы серверге қосылады</span>
+  </header>
+
+  <div class="card">
+    <div class="box">
+      <div class="row">
+        <div class="grow">
+          <h2>AI Чат</h2>
+          <div id="msgs" class="msgs" aria-live="polite"></div>
+
+          <div class="row" style="margin-top:12px">
+            <input id="input" class="grow" placeholder="Мысалы: Маған сайтқа мәтін жазып бер..." />
+            <button id="send">Жіберу</button>
+          </div>
+
+          <p class="muted" style="margin-top:10px">
+            Кеңес: “Сайтқа басты бет мәтінін қазақша жаз” деп көр.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const msgs = document.getElementById('msgs');
+    const input = document.getElementById('input');
+    const sendBtn = document.getElementById('send');
+
+    function addMsg(role, text){
+      const div = document.createElement('div');
+      div.className = 'msg ' + (role === 'user' ? 'me' : 'ai');
+      div.textContent = text;
+      msgs.appendChild(div);
+      msgs.scrollTop = msgs.scrollHeight;
+    }
+
+    async function send(){
+      const text = input.value.trim();
+      if(!text) return;
+
+      addMsg('user', text);
+      input.value = '';
+      sendBtn.disabled = true;
+
+      try{
+        const res = await fetch('/api/chat', {
+          method: 'POST',
+          headers: {'Content-Type':'application/json'},
+          body: JSON.stringify({ message: text })
+        });
+
+        if(!res.ok){
+          const err = await res.text();
+          addMsg('assistant', 'Қате: ' + err);
+        } else {
+          const data = await res.json();
+          addMsg('assistant', data.reply || 'Жауап жоқ');
+        }
+      } catch(e){
+        addMsg('assistant', 'Қосыла алмады. Сервер жүріп тұр ма?');
+      } finally{
+        sendBtn.disabled = false;
+        input.focus();
+      }
+    }
+
+    sendBtn.addEventListener('click', send);
+    input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
+
+    addMsg('assistant', 'Сәлем! Мен сайттағы AI көмекшімін. Не керек?');
+  </script>
+</body>
+</html>
