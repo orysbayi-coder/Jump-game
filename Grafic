@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Neon Flappy — Levels + Coins + Stars</title>
+  <style>
+    html,body{height:100%;margin:0;background:#070a14;color:#e7ecff;font-family:system-ui,Segoe UI,Arial}
+    .wrap{display:grid;place-items:center;height:100%}
+    canvas{
+      border-radius:18px;
+      border:1px solid rgba(255,255,255,.14);
+      box-shadow:0 30px 120px rgba(0,0,0,.55);
+      touch-action:manipulation;
+    }
+    .hint{
+      max-width:760px;text-align:center;margin-top:12px;color:#aab6e6;font-size:14px;line-height:1.35
+    }
+    .kbd{display:inline-block;padding:2px 8px;border:1px solid rgba(255,255,255,.2);border-radius:9px;background:rgba(255,255,255,.06)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div>
+      <canvas id="c" width="420" height="720"></canvas>
+      <div class="hint">
+        Басқару: <span class="kbd">Space</span> немесе <span class="kbd">Click/Tap</span> — секіру.
+        <span class="kbd">R</span> — 1-деңгейден бастау.
+        Ұпай: құбыр +1, 🪙 монета +2, ⭐ жұлдыз +5. Деңгей өту: <b>20 ұпай</b>.
+      </div>
+    </div>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+
+  const W = canvas.width, H = canvas.height;
+
+  // ===== Levels =====
+  const LEVEL_CLEAR_SCORE = 20;
+  const levels = [
+    { name:"1", pipeSpeed: 2.6, gap: 178, gravity: 0.42, spawn: 1450 },
+    { name:"2", pipeSpeed: 3.1, gap: 168, gravity: 0.45, spawn: 1400 },
+    { name:"3", pipeSpeed: 3.6, gap: 158, gravity: 0.48, spawn: 1350 },
+    { name:"4", pipeSpeed: 4.2, gap: 148, gravity: 0.50, spawn: 1300 },
+    { name:"5", pipeSpeed: 4.8, gap: 138, gravity: 0.52, spawn: 1250 },
+  ];
+
+  // ===== State =====
+  let levelIndex = 0;
+  let score = 0, best = 0;
+  let running = false, gameOver = false, winAll = false;
+  let pipes = [];
+  let items = []; // coins + stars
+  let lastSpawn = 0;
+  let t = 0;
+
+  // ===== Bird =====
+  const bird = {
+    x: 112,
+    y: H * 0.45,
+    r: 14,
+    vy: 0,
+    flap: -8.2,
+    tilt: 0
+  };
+
+  function lvl(){ return levels[levelIndex]; }
+
+  function rand(a,b){ return a + Math.random()*(b-a); }
+
+  function reset(toNextLevel=false){
+    pipes = [];
+    items = [];
+    bird.y = H * 0.45;
+    bird.vy = 0;
+    bird.tilt = 0;
+
+    score = 0;
+    lastSpawn = performance.now();
+    gameOver = false;
+    winAll = false;
+
+    if (!toNextLevel) levelIndex = 0;
+    running = false; // show start overlay
+  }
+
+  function nextLevel(){
+    levelIndex++;
+    if (levelIndex >= levels.length) {
+      winAll = true;
+      running = false;
+      return;
+    }
+    // new level
+    pipes = [];
+    items = [];
+    bird.y = H * 0.45;
+    bird.vy = 0;
+    lastSpawn = performance.now();
+    gameOver = false;
+    running = true;
+    score = 0;
+  }
+
+  // ===== Pipes + Items =====
+  function spawnPipeAndItems(){
+    const L = lvl();
+    const gap = L.gap;
+
+    const margin = 95;
+    const center = rand(margin + gap/2, H - margin - gap/2);
+    const topH = center - gap/2;
+    const botY = center + gap/2;
+
+    const pipeX = W + 60;
+    const pipe = { x: pipeX, w: 74, topH, botY, passed:false };
+    pipes.push(pipe);
+
+    // Items: 0..2 per pipe
+    // Place inside the gap region, with some randomness
+    const count = (Math.random() < 0.35) ? 2 : (Math.random() < 0.80 ? 1 : 0);
+    for (let i=0;i<count;i++){
+      const type = (Math.random() < 0.18) ? "star" : "coin"; // stars rarer
+      const y = rand(topH + 30, botY - 30);
+      const x = pipeX + rand(10, 110);
+      const r = type === "star" ? 12 : 10;
+      items.push({
+        type,
+        x, y, r,
+        alive:true,
+        // little float animation phase
+        ph: Math.random() * Math.PI * 2
+      });
+    }
+  }
+
+  // ===== Collision =====
+  function circleRectCollide(cx, cy, cr, rx, ry, rw, rh) {
+    const nx = Math.max(rx, Math.min(cx, rx + rw));
+    const ny = Math.max(ry, Math.min(cy, ry + rh));
+    const dx = cx - nx, dy = cy - ny;
+    return (dx*dx + dy*dy) <= cr*cr;
+  }
+  function circleCircle(cx,cy,cr, x,y,r){
+    const dx=cx-x, dy=cy-y;
+    return dx*dx+dy*dy <= (cr+r)*(cr+r);
+  }
+
+  // ===== Input =====
+  function flap(){
+    if (winAll) return;
+    if (gameOver) { // restart same level
+      pipes = [];
+      items = [];
+      bird.y = H*0.45;
+      bird.vy = 0;
+      lastSpawn = performance.now();
+      score = 0;
+      gameOver = false;
+      running = true;
+      return;
+    }
+    if (!running) running = true;
+    bird.vy = bird.flap;
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); flap(); }
+    if (e.key.toLowerCase() === 'r') { reset(false); }
+  });
+  canvas.addEventListener('pointerdown', flap);
+
+  // ===== Update =====
+  function update(dt){
+    const L = lvl();
+
+    // bird physics
+    bird.vy += L.gravity;
+    bird.y += bird.vy;
+
+    // tilt based on velocity
+    bird.tilt = Math.max(-0.55, Math.min(0.95, bird.vy / 12));
+
+    // bounds
+    if (bird.y - bird.r < 0) { bird.y = bird.r; bird.vy = 0; }
+    if (bird.y + bird.r > H) {
+      bird.y = H - bird.r;
+      gameOver = true;
+      running = false;
+    }
+
+    // spawn
+    const now = performance.now();
+    if (now - lastSpawn > L.spawn) {
+      spawnPipeAndItems();
+      lastSpawn = now;
+    }
+
+    // move pipes
+    for (const p of pipes) p.x -= L.pipeSpeed;
+    pipes = pipes.filter(p => p.x + p.w > -120);
+
+    // move items with pipes (and float)
+    for (const it of items){
+      it.x -= L.pipeSpeed;
+      it.ph += dt * 4.5;
+      it.y += Math.sin(it.ph) * 0.25;
+    }
+    items = items.filter(it => it.alive && it.x > -120);
+
+    // collisions with pipes
+    for (const p of pipes) {
+      const topRect = { x:p.x, y:0, w:p.w, h:p.topH };
+      const botRect = { x:p.x, y:p.botY, w:p.w, h:H - p.botY };
+
+      if (circleRectCollide(bird.x, bird.y, bird.r, topRect.x, topRect.y, topRect.w, topRect.h) ||
+          circleRectCollide(bird.x, bird.y, bird.r, botRect.x, botRect.y, botRect.w, botRect.h)) {
+        gameOver = true;
+        running = false;
+      }
+
+      // scoring for passing pipe
+      if (!p.passed && p.x + p.w < bird.x) {
+        p.passed = true;
+        score += 1;
+        best = Math.max(best, score);
+
+        if (score >= LEVEL_CLEAR_SCORE) {
+          running = false;
+          setTimeout(nextLevel, 650);
+        }
+      }
+    }
+
+    // collect items
+    for (const it of items){
+      if (!it.alive) continue;
+      if (circleCircle(bird.x, bird.y, bird.r, it.x, it.y, it.r)) {
+        it.alive = false;
+        if (it.type === "coin") score += 2;
+        else score += 5;
+        best = Math.max(best, score);
+
+        if (score >= LEVEL_CLEAR_SCORE) {
+          running = false;
+          setTimeout(nextLevel, 650);
+        }
+      }
+    }
+
+    t += dt;
+  }
+
+  // ===== Drawing (New Graphics) =====
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    // Neon sky gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, "#091027");
+    g.addColorStop(0.45, "#0a1030");
+    g.addColorStop(1, "#050712");
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // Aurora waves
+    drawAurora();
+
+    // Starfield parallax
+    drawStars();
+
+    // Ground / city silhouette
+    drawCity();
+
+    // Pipes
+    for (const p of pipes){
+      drawPipe(p.x, 0, p.w, p.topH, true);
+      drawPipe(p.x, p.botY, p.w, H - p.botY, false);
+    }
+
+    // Items
+    for (const it of items){
+      if (!it.alive) continue;
+      if (it.type === "coin") drawCoin(it.x, it.y, it.r);
+      else drawStar(it.x, it.y, it.r);
+    }
+
+    // Bird
+    drawBirdNeon(bird.x, bird.y, bird.r, bird.tilt);
+
+    // HUD
+    drawHUD();
+
+    // overlays
+    if (winAll) overlay("Жеңіс! 🎉", "Барлық деңгейді өттің. R — қайта бастау");
+    else if (!running && !gameOver && score === 0 && levelIndex === 0 && pipes.length === 0) {
+      overlay("Neon Flappy", "Space / Click — бастау");
+    } else if (gameOver) {
+      overlay("Ойын бітті 💥", "Space — қайта ойнау (осы деңгей), R — 1-деңгейден");
+    } else if (!running && score >= LEVEL_CLEAR_SCORE) {
+      overlay("Деңгей өтті ✅", "Келесі деңгей...");
+    }
+  }
+
+  function drawStars(){
+    // three layers
+    for (let layer=0; layer<3; layer++){
+      const count = 18 + layer*10;
+      const speed = (0.25 + layer*0.35);
+      ctx.globalAlpha = 0.18 + layer*0.12;
+      for (let i=0;i<count;i++){
+        const x = (i*71 + (t*240*speed)) % (W+60);
+        const y = (i*137 + layer*53) % (H-140);
+        ctx.fillStyle = "#ffffff";
+        ctx.fillRect(W - x, y, 2, 2);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawAurora(){
+    ctx.save();
+    ctx.globalAlpha = 0.35;
+    ctx.translate(0, 0);
+    for (let k=0;k<3;k++){
+      ctx.beginPath();
+      const baseY = 130 + k*55;
+      for (let x=0;x<=W;x+=18){
+        const y = baseY
+          + Math.sin((x*0.012) + t*1.3 + k)*18
+          + Math.sin((x*0.028) - t*0.9)*10;
+        if (x===0) ctx.moveTo(x,y);
+        else ctx.lineTo(x,y);
+      }
+      ctx.lineTo(W, baseY+120);
+      ctx.lineTo(0, baseY+120);
+      ctx.closePath();
+      const ag = ctx.createLinearGradient(0, baseY-40, 0, baseY+120);
+      ag.addColorStop(0, "rgba(106,167,255,.0)");
+      ag.addColorStop(0.4, "rgba(106,167,255,.35)");
+      ag.addColorStop(0.7, "rgba(139,91,255,.28)");
+      ag.addColorStop(1, "rgba(139,91,255,.0)");
+      ctx.fillStyle = ag;
+      ctx.fill();
+    }
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCity(){
+    // ground fade
+    const gh = 90;
+    const gg = ctx.createLinearGradient(0,H-gh,0,H);
+    gg.addColorStop(0, "rgba(0,0,0,.12)");
+    gg.addColorStop(1, "rgba(0,0,0,.65)");
+    ctx.fillStyle = gg;
+    ctx.fillRect(0, H-gh, W, gh);
+
+    // silhouette
+    ctx.fillStyle = "rgba(0,0,0,.55)";
+    for (let i=0;i<14;i++){
+      const bw = 28 + (i%3)*12;
+      const bx = (i*36 - (t*70)%36);
+      const bh = 40 + (i%5)*18;
+      ctx.fillRect(bx, H-70-bh, bw, bh);
+    }
+
+    // neon horizon line
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = "rgba(106,167,255,.7)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, H-70);
+    ctx.lineTo(W, H-70);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawPipe(x,y,w,h,isTop){
+    // neon glass pipe
+    const body = ctx.createLinearGradient(x,y,x+w,y+h);
+    body.addColorStop(0,"rgba(16, 28, 60, .85)");
+    body.addColorStop(1,"rgba(10, 18, 44, .95)");
+    ctx.fillStyle = body;
+    roundRect(x,y,w,h,14,true,false);
+
+    // inner glow
+    ctx.globalAlpha = 0.55;
+    ctx.strokeStyle = "rgba(106,167,255,.55)";
+    ctx.lineWidth = 2;
+    roundRect(x+2,y+2,w-4,h-4,12,false,true);
+    ctx.globalAlpha = 1;
+
+    // edge highlight
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = "rgba(139,91,255,.55)";
+    ctx.lineWidth = 2;
+    roundRect(x+6,y+6,w-12,h-12,10,false,true);
+    ctx.globalAlpha = 1;
+
+    // cap/lip
+    const lipH = 16;
+    const capY = isTop ? (y + h - lipH) : y;
+    const capG = ctx.createLinearGradient(x-8,capY,x+w+8,capY+lipH);
+    capG.addColorStop(0,"rgba(139,91,255,.22)");
+    capG.addColorStop(1,"rgba(106,167,255,.22)");
+    ctx.fillStyle = capG;
+    roundRect(x-8, capY, w+16, lipH, 10, true, false);
+
+    // subtle scanlines
+    ctx.globalAlpha = 0.06;
+    ctx.fillStyle = "#ffffff";
+    for (let yy = y + 8; yy < y + h; yy += 10){
+      ctx.fillRect(x+6, yy, w-12, 1);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function drawCoin(x,y,r){
+    // coin glow
+    ctx.save();
+    ctx.shadowBlur = 18;
+    ctx.shadowColor = "rgba(255,220,120,.55)";
+    const cg = ctx.createRadialGradient(x-r*0.3,y-r*0.3,2, x,y,r*1.2);
+    cg.addColorStop(0,"rgba(255,245,190,.95)");
+    cg.addColorStop(0.6,"rgba(255,200,90,.75)");
+    cg.addColorStop(1,"rgba(255,200,90,.05)");
+    ctx.fillStyle = cg;
+    ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
+    ctx.restore();
+
+    // coin ring
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = "rgba(255,245,200,.85)";
+    ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x,y,r-1,0,Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // coin symbol
+    ctx.globalAlpha = 0.8;
+    ctx.strokeStyle = "rgba(120,70,10,.55)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.arc(x,y,r*0.45,0,Math.PI*2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawStar(x,y,r){
+    ctx.save();
+    ctx.shadowBlur = 22;
+    ctx.shadowColor = "rgba(160,240,255,.55)";
+    const sg = ctx.createRadialGradient(x,y,2,x,y,r*1.4);
+    sg.addColorStop(0,"rgba(220,255,255,.95)");
+    sg.addColorStop(0.55,"rgba(120,210,255,.75)");
+    sg.addColorStop(1,"rgba(120,210,255,.05)");
+    ctx.fillStyle = sg;
+
+    ctx.beginPath();
+    const spikes = 5;
+    const outer = r, inner = r*0.45;
+    let rot = -Math.PI/2;
+    const step = Math.PI/spikes;
+    ctx.moveTo(x + Math.cos(rot)*outer, y + Math.sin(rot)*outer);
+    for (let i=0;i<spikes;i++){
+      ctx.lineTo(x + Math.cos(rot+step)*inner, y + Math.sin(rot+step)*inner);
+      ctx.lineTo(x + Math.cos(rot+2*step)*outer, y + Math.sin(rot+2*step)*outer);
+      rot += 2*step;
+    }
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+
+    ctx.globalAlpha = 0.9;
+    ctx.strokeStyle = "rgba(220,255,255,.75)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  function drawBirdNeon(x,y,r,tilt){
+    ctx.save();
+    ctx.translate(x,y);
+    ctx.rotate(tilt);
+
+    // glow
+    ctx.shadowBlur = 24;
+    ctx.shadowColor = "rgba(139,91,255,.55)";
+
+    // body gradient
+    const bg = ctx.createLinearGradient(-r,-r,r,r);
+    bg.addColorStop(0,"rgba(231,236,255,.96)");
+    bg.addColorStop(0.5,"rgba(150,190,255,.88)");
+    bg.addColorStop(1,"rgba(139,91,255,.78)");
+    ctx.fillStyle = bg;
+
+    // body
+    ctx.beginPath();
+    ctx.ellipse(0,0,r*1.05,r*0.92,0,0,Math.PI*2);
+    ctx.fill();
+
+    // outline
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "rgba(0,0,0,.28)";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // wing
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "rgba(10,15,40,.35)";
+    ctx.beginPath();
+    ctx.ellipse(-4, 4, r*0.55, r*0.35, -0.4, 0, Math.PI*2);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+
+    // eye
+    ctx.fillStyle = "rgba(10,10,15,.65)";
+    ctx.beginPath(); ctx.arc(r*0.25,-r*0.18,3.3,0,Math.PI*2); ctx.fill();
+
+    // beak
+    ctx.fillStyle = "rgba(255,220,120,.9)";
+    ctx.beginPath();
+    ctx.moveTo(r*0.9, 1);
+    ctx.lineTo(r*1.55, -3);
+    ctx.lineTo(r*1.55, 5);
+    ctx.closePath();
+    ctx.fill();
+    ctx.strokeStyle = "rgba(0,0,0,.22)";
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function drawHUD(){
+    const L = lvl();
+    // panel
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.fillStyle = "rgba(0,0,0,.22)";
+    roundRect(10, 10, W-20, 56, 14, true, false);
+    ctx.globalAlpha = 1;
+
+    ctx.fillStyle = "rgba(231,236,255,.92)";
+    ctx.font = "700 16px system-ui, Segoe UI, Arial";
+    ctx.fillText(`Деңгей: ${L.name}/${levels.length}`, 22, 32);
+
+    ctx.fillStyle = "rgba(170,182,230,.92)";
+    ctx.font = "14px system-ui, Segoe UI, Arial";
+    ctx.fillText(`Мақсат: ${LEVEL_CLEAR_SCORE} ұпай`, 22, 54);
+
+    ctx.fillStyle = "rgba(231,236,255,.95)";
+    ctx.font = "900 18px system-ui, Segoe UI, Arial";
+    ctx.textAlign = "right";
+    ctx.fillText(`Ұпай: ${score}`, W-22, 34);
+
+    ctx.fillStyle = "rgba(170,182,230,.92)";
+    ctx.font = "14px system-ui, Segoe UI, Arial";
+    ctx.fillText(`Best: ${best}`, W-22, 54);
+
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
+  function overlay(title, subtitle){
+    ctx.save();
+    ctx.fillStyle = "rgba(0,0,0,.48)";
+    ctx.fillRect(0,0,W,H);
+
+    // glass card
+    ctx.globalAlpha = 0.9;
+    ctx.fillStyle = "rgba(10,14,30,.55)";
+    roundRect(36, H/2-110, W-72, 220, 22, true, false);
+
+    // neon border
+    ctx.globalAlpha = 1;
+    ctx.strokeStyle = "rgba(106,167,255,.35)";
+    ctx.lineWidth = 2;
+    roundRect(36, H/2-110, W-72, 220, 22, false, true);
+
+    ctx.fillStyle = "rgba(231,236,255,.95)";
+    ctx.font = "900 34px system-ui, Segoe UI, Arial";
+    ctx.textAlign = "center";
+    ctx.fillText(title, W/2, H/2 - 20);
+
+    ctx.fillStyle = "rgba(170,182,230,.95)";
+    ctx.font = "16px system-ui, Segoe UI, Arial";
+    ctx.fillText(subtitle, W/2, H/2 + 18);
+
+    ctx.fillStyle = "rgba(170,182,230,.75)";
+    ctx.font = "13px system-ui, Segoe UI, Arial";
+    ctx.fillText("🪙 +2  •  ⭐ +5  •  Құбыр +1", W/2, H/2 + 52);
+
+    ctx.textAlign = "left";
+    ctx.restore();
+  }
+
+  function roundRect(x,y,w,h,r,fill,stroke){
+    const rr = Math.min(r, w/2, h/2);
+    ctx.beginPath();
+    ctx.moveTo(x+rr,y);
+    ctx.arcTo(x+w,y, x+w,y+h, rr);
+    ctx.arcTo(x+w,y+h, x,y+h, rr);
+    ctx.arcTo(x,y+h, x,y, rr);
+    ctx.arcTo(x,y, x+w,y, rr);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  // ===== Main loop =====
+  let last = performance.now();
+  function loop(now){
+    const dt = Math.min(0.03, (now-last)/1000);
+    last = now;
+
+    if (running && !gameOver && !winAll) update(dt);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // init
+  reset(false);
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>
