@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="kk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Space Tap Shooter</title>
+  <style>
+    html,body{margin:0;height:100%;background:#060915;color:#fff;font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial}
+    #wrap{height:100%;display:flex;align-items:center;justify-content:center}
+    canvas{width:min(100vw,520px);height:calc(width * 1.6);max-height:92vh;border-radius:18px;
+      background:linear-gradient(#060915,#0c1533);box-shadow:0 12px 40px rgba(0,0,0,.45);touch-action:none}
+    .hud{position:fixed;inset:0;pointer-events:none;display:flex;justify-content:center;align-items:flex-start;
+      padding:env(safe-area-inset-top) 14px 0 14px}
+    .pill{margin-top:10px;display:flex;gap:10px;align-items:center;padding:10px 14px;border-radius:999px;
+      background:rgba(255,255,255,.08);backdrop-filter:blur(10px);border:1px solid rgba(255,255,255,.12);font-weight:700}
+    .btnRow{position:fixed;bottom:18px;left:0;right:0;display:flex;justify-content:center;gap:10px;
+      padding:0 14px calc(env(safe-area-inset-bottom) + 0px) 14px;pointer-events:auto}
+    button{border:1px solid rgba(255,255,255,.18);background:rgba(255,255,255,.08);color:#fff;font-weight:800;
+      padding:12px 16px;border-radius:14px;backdrop-filter:blur(10px);box-shadow:0 8px 20px rgba(0,0,0,.25)}
+    button:active{transform:translateY(1px)}
+    .hint{position:fixed;top:64px;left:0;right:0;display:flex;justify-content:center;pointer-events:none;opacity:.9;
+      text-align:center;font-size:14px}
+  </style>
+</head>
+<body>
+  <div id="wrap"><canvas id="c" width="360" height="576"></canvas></div>
+
+  <div class="hud">
+    <div class="pill">
+      <span>Ұпай: <span id="score">0</span></span>
+      <span>Рекорд: <span id="best">0</span></span>
+      <span id="state">PLAY</span>
+    </div>
+  </div>
+
+  <div class="hint" id="hint">Экранды түрт — ату 🔫  •  Саусағыңды жылжыт — кеме қозғалады</div>
+
+  <div class="btnRow">
+    <button id="restart">Restart</button>
+    <button id="mute">Sound: ON</button>
+  </div>
+
+<script>
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const scoreEl = document.getElementById('score');
+  const bestEl  = document.getElementById('best');
+  const stateEl = document.getElementById('state');
+  const hintEl  = document.getElementById('hint');
+  const restartBtn = document.getElementById('restart');
+  const muteBtn = document.getElementById('mute');
+
+  // --- tiny beeps ---
+  let soundOn = true;
+  const AudioCtx = window.AudioContext || window.webkitAudioContext;
+  let actx = null;
+  function beep(freq=440, dur=0.06, type='sine', vol=0.04) {
+    if (!soundOn) return;
+    if (!actx) actx = new AudioCtx();
+    const o = actx.createOscillator();
+    const g = actx.createGain();
+    o.type = type; o.frequency.value = freq; g.gain.value = vol;
+    o.connect(g); g.connect(actx.destination);
+    o.start(); o.stop(actx.currentTime + dur);
+  }
+
+  const ship = { x: W/2, y: H-90, r: 18, vx: 0 };
+  let bullets = [];
+  let enemies = [];
+  let stars = [];
+  for (let i=0;i<50;i++) stars.push({ x:Math.random()*W, y:Math.random()*H, s:1+Math.random()*2 });
+
+  let t = 0;
+  let score = 0;
+  let best = Number(localStorage.getItem('best_space_tap') || 0);
+  bestEl.textContent = best;
+  let gameOver = false;
+
+  function reset(){
+    bullets = [];
+    enemies = [];
+    t = 0;
+    score = 0;
+    ship.x = W/2;
+    ship.vx = 0;
+    gameOver = false;
+    stateEl.textContent = "PLAY";
+    hintEl.style.display = "flex";
+  }
+
+  function clamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function spawnEnemy(){
+    const r = 14 + Math.random()*10;
+    enemies.push({
+      x: r + Math.random()*(W-2*r),
+      y: -30,
+      r,
+      vy: 1.7 + Math.random()*1.2 + Math.min(2.2, score/120),
+      hp: r > 20 ? 2 : 1
+    });
+  }
+
+  function shoot(){
+    if (gameOver) return;
+    hintEl.style.display = "none";
+    bullets.push({ x: ship.x, y: ship.y-22, vy: -8.5 });
+    beep(720, 0.04, 'square', 0.03);
+  }
+
+  function endGame(){
+    gameOver = true;
+    stateEl.textContent = "GAME OVER";
+    beep(180, 0.09, 'sawtooth', 0.05);
+    beep(120, 0.12, 'sawtooth', 0.05);
+    if (score > best){
+      best = score;
+      localStorage.setItem('best_space_tap', String(best));
+      bestEl.textContent = best;
+    }
+  }
+
+  function dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; }
+
+  // Touch controls: drag ship, tap to shoot
+  let dragging = false;
+  canvas.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (W / rect.width);
+    const y = (e.clientY - rect.top)  * (H / rect.height);
+    dragging = true;
+
+    // if touch is near ship -> drag, else shoot + move toward touch a bit
+    if (dist2(x,y,ship.x,ship.y) < 60*60) {
+      ship.x = x;
+    } else {
+      ship.x = x;
+      shoot();
+    }
+  }, {passive:false});
+
+  canvas.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = (e.clientX - rect.left) * (W / rect.width);
+    ship.x = x;
+  });
+
+  window.addEventListener('pointerup', () => dragging = false);
+
+  // keyboard fallback
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); shoot(); }
+    if (e.code === 'ArrowLeft') ship.vx = -5;
+    if (e.code === 'ArrowRight') ship.vx = 5;
+  });
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') ship.vx = 0;
+  });
+
+  restartBtn.addEventListener('click', () => { reset(); beep(520,0.05,'triangle',0.03); });
+  muteBtn.addEventListener('click', () => {
+    soundOn = !soundOn;
+    muteBtn.textContent = "Sound: " + (soundOn ? "ON" : "OFF");
+    if (soundOn) beep(520,0.05,'triangle',0.03);
+  });
+
+  function draw(){
+    ctx.clearRect(0,0,W,H);
+
+    // background
+    const grad = ctx.createLinearGradient(0,0,0,H);
+    grad.addColorStop(0,"#060915"); grad.addColorStop(1,"#0c1533");
+    ctx.fillStyle = grad; ctx.fillRect(0,0,W,H);
+
+    // stars
+    ctx.globalAlpha = 0.5;
+    ctx.fillStyle = "#fff";
+    for (const s of stars) ctx.fillRect(s.x, s.y, s.s, s.s);
+    ctx.globalAlpha = 1;
+
+    // bullets
+    ctx.fillStyle = "rgba(170,240,255,0.95)";
+    for (const b of bullets) {
+      ctx.beginPath();
+      ctx.roundRect(b.x-3, b.y-10, 6, 16, 4);
+      ctx.fill();
+    }
+
+    // enemies
+    for (const en of enemies){
+      const g = ctx.createRadialGradient(en.x-6,en.y-6,6,en.x,en.y,en.r+10);
+      g.addColorStop(0,"rgba(255,110,110,0.95)");
+      g.addColorStop(1,"rgba(255,80,200,0.55)");
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(en.x, en.y, en.r, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.strokeStyle = "rgba(255,255,255,0.18)";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(en.x, en.y, en.r-1, 0, Math.PI*2);
+      ctx.stroke();
+
+      // hp dot
+      if (en.hp > 1){
+        ctx.fillStyle = "rgba(255,255,255,0.8)";
+        ctx.beginPath();
+        ctx.arc(en.x, en.y, 3.2, 0, Math.PI*2);
+        ctx.fill();
+      }
+    }
+
+    // ship
+    const sg = ctx.createRadialGradient(ship.x-8, ship.y-10, 6, ship.x, ship.y, 30);
+    sg.addColorStop(0,"rgba(120,240,255,0.95)");
+    sg.addColorStop(1,"rgba(120,140,255,0.55)");
+    ctx.fillStyle = sg;
+    ctx.beginPath();
+    ctx.moveTo(ship.x, ship.y-24);
+    ctx.lineTo(ship.x-18, ship.y+18);
+    ctx.lineTo(ship.x+18, ship.y+18);
+    ctx.closePath();
+    ctx.fill();
+
+    // score backup
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.font = "800 18px system-ui";
+    ctx.fillText("Ұпай: " + score, 16, 28);
+
+    if (gameOver){
+      ctx.fillStyle = "rgba(0,0,0,0.45)";
+      ctx.fillRect(0,0,W,H);
+      ctx.fillStyle = "#fff";
+      ctx.textAlign = "center";
+      ctx.font = "900 34px system-ui";
+      ctx.fillText("GAME OVER", W/2, H/2 - 30);
+      ctx.font = "650 18px system-ui";
+      ctx.fillText("Restart бас немесе экранды түрт", W/2, H/2 + 10);
+      ctx.textAlign = "left";
+    }
+  }
+
+  function update(){
+    t++;
+
+    if (!gameOver){
+      // stars move
+      for (const s of stars){
+        s.y += 1.2;
+        if (s.y > H) { s.y = -5; s.x = Math.random()*W; }
+      }
+
+      // ship
+      ship.x = clamp(ship.x + ship.vx, ship.r+6, W-ship.r-6);
+
+      // spawn enemies
+      const spawnEvery = Math.max(18, 46 - Math.floor(score/20));
+      if (t % spawnEvery === 0) spawnEnemy();
+
+      // bullets
+      for (const b of bullets) b.y += b.vy;
+      bullets = bullets.filter(b => b.y > -30);
+
+      // enemies
+      for (const en of enemies) en.y += en.vy;
+
+      // collisions bullet-enemy
+      for (let i=enemies.length-1;i>=0;i--){
+        const en = enemies[i];
+        for (let j=bullets.length-1;j>=0;j--){
+          const b = bullets[j];
+          if (dist2(en.x,en.y,b.x,b.y) <= (en.r+6)*(en.r+6)){
+            bullets.splice(j,1);
+            en.hp -= 1;
+            beep(420, 0.03, 'triangle', 0.03);
+            if (en.hp <= 0){
+              enemies.splice(i,1);
+              score += 10;
+              scoreEl.textContent = score;
+              beep(880, 0.04, 'square', 0.03);
+            }
+            break;
+          }
+        }
+      }
+
+      // collision enemy-ship
+      for (const en of enemies){
+        if (dist2(en.x,en.y,ship.x,ship.y) <= (en.r+ship.r-2)*(en.r+ship.r-2)){
+          endGame();
+          break;
+        }
+      }
+
+      // remove offscreen enemies
+      enemies = enemies.filter(en => en.y < H + 40);
+
+      // passive score over time
+      if (t % 20 === 0) {
+        score += 1;
+        scoreEl.textContent = score;
+      }
+    }
+
+    draw();
+    requestAnimationFrame(update);
+  }
+
+  // tap to restart on gameover
+  canvas.addEventListener('pointerdown', () => {
+    if (gameOver) { reset(); beep(520,0.05,'triangle',0.03); }
+  });
+
+  reset();
+  update();
+})();
+</script>
+</body>
+</html>
